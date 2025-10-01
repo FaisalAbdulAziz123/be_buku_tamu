@@ -1,15 +1,13 @@
 const express = require("express");
 const cors = require("cors");
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcryptjs'); // Pastikan Anda sudah menginstall bcryptjs
 
-
-// Pastikan path ke file-file ini benar dan file tersebut ada
+// Pastikan path ke file-file ini benar
 const tamuRoutes = require("./routes/tamu");
 const usersRoutes = require("./routes/users");
-const db = require("./config/db"); // Pastikan konfigurasi database Anda benar (./config/db.js)
+const db = require("./config/db"); // Pastikan konfigurasi database Anda sudah benar
 
 const app = express();
-const port = process.env.PORT || 5000;
 
 /* ======================= MIDDLEWARE ======================= */
 app.use(cors());
@@ -22,20 +20,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// Middleware untuk mempercayai header proxy (penting agar req.ip benar jika di belakang proxy)
+// Middleware untuk mempercayai header proxy (penting agar req.ip benar di Vercel)
 app.set('trust proxy', true);
-
-// Error handling (pastikan ini adalah middleware terakhir sebelum app.listen)
-app.use((err, req, res, next) => {
-  console.error("❌ SERVER ERROR:", err.stack || err);
-  res.status(500).json({ error: "Terjadi kesalahan fatal pada server." });
-});
 
 /* ======================= ENDPOINT UMUM ======================= */
 
 app.get("/api/status", async (req, res) => {
   try {
-    await db.query('SELECT 1 AS result');
+    // Gunakan promise wrapper jika db library Anda tidak mendukungnya secara native
+    await db.promise().query('SELECT 1 AS result');
     res.json({
       status: "online",
       server: "running",
@@ -76,26 +69,26 @@ app.get("/api/schema/tamu", (req, res) => {
   });
 });
 
-/* ======================= LOGIN USER (Non-Admin) ======================= */
-app.post("/api/login", (req, res) => {
+/* ======================= LOGIN USER (Diperbaiki dengan bcryptjs) ======================= */
+app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ error: "Username dan password wajib diisi" });
   }
 
-  db.query("SELECT * FROM users WHERE username = ?", [username], async (err, results) => {
-    if (err) {
-      console.error("❌ Gagal mengambil data user:", err);
-      return res.status(500).json({ error: "Terjadi kesalahan server saat mengambil data user" });
-    }
+  try {
+    // Menggunakan db.promise() untuk async/await
+    const [results] = await db.promise().query("SELECT * FROM users WHERE username = ?", [username]);
 
     if (results.length === 0) {
       return res.status(401).json({ error: "Username tidak ditemukan" });
     }
 
     const user = results[0];
-    const isMatch = password === user.password; // TIDAK AMAN jika password tidak di-hash
+    
+    // PERBAIKAN PENTING: Gunakan bcrypt.compare untuk membandingkan password
+    const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
       return res.status(401).json({ error: "Password salah" });
@@ -105,71 +98,66 @@ app.post("/api/login", (req, res) => {
       message: "Login user berhasil",
       user: { id: user.id, name: user.name, nip: user.nip, username: user.username },
     });
-  });
-});
-
-/* ======================= LOGIN ADMIN ======================= */
-app.post("/api/admin-login", (req, res) => {
-  const { nama_pengguna, password } = req.body;
-  console.log(`[ADMIN LOGIN ATTEMPT] User: ${nama_pengguna}`);
-
-  if (!nama_pengguna || !password) {
-    console.warn("[ADMIN LOGIN] Data tidak lengkap:", { nama_pengguna, password_exists: !!password });
-    return res.status(400).json({ error: "Nama pengguna dan password admin wajib diisi" });
+  } catch (err) {
+    console.error("❌ Gagal mengambil data user:", err);
+    return res.status(500).json({ error: "Terjadi kesalahan server saat mengambil data user" });
   }
-
-  db.query("SELECT * FROM admins WHERE nama_pengguna = ?", [nama_pengguna], async (err, results) => {
-    if (err) {
-      console.error("❌ Gagal mengambil data admin dari DB:", err);
-      return res.status(500).json({ error: "Kesalahan server saat mengambil data admin" });
-    }
-
-    if (results.length === 0) {
-      console.warn(`[ADMIN LOGIN] Admin tidak ditemukan: ${nama_pengguna}`);
-      return res.status(401).json({ error: "Admin tidak ditemukan" });
-    }
-
-    const admin = results[0];
-    console.log("[ADMIN LOGIN] Data admin dari DB:", { id: admin.id, nama_pengguna: admin.nama_pengguna, password_stored: admin.password ? '***' : 'NOT_FOUND' });
-
-    const isMatch = (password === admin.password); // SANGAT TIDAK AMAN. Segera ganti dengan bcrypt.
-
-    if (!isMatch) {
-      console.warn(`[ADMIN LOGIN] Password salah untuk admin: ${admin.nama_pengguna}`);
-      return res.status(401).json({ error: "Password admin salah" });
-    }
-
-    console.log(`[ADMIN LOGIN] Login berhasil untuk admin: ${admin.nama_pengguna}`);
-
-    // Simpan log aktivitas admin ke tabel baru yang disederhanakan
-    if (admin.nama_pengguna) { // Hanya butuh nama_pengguna sekarang
-      const usernameAdmin = admin.nama_pengguna;
-      const waktuLogin = new Date(); // Mendapatkan waktu saat ini dari aplikasi
-
-      // DEBUGGING LOG: Data yang akan dimasukkan ke tabel log
-      console.log("ℹ️ [ADMIN LOGGING] Data untuk log admin (sederhana):", { usernameAdmin, waktuLogin });
-
-      db.query(
-        "INSERT INTO log_aktivitas_admin (username_admin, waktu_login) VALUES (?, ?)", // Query disederhanakan
-        [usernameAdmin, waktuLogin], // Parameter disederhanakan
-        (logErr, logResult) => {
-          if (logErr) {
-            console.error("❌ [ADMIN LOGGING] GAGAL menyimpan log aktivitas admin (sederhana):", logErr);
-          } else {
-            console.log("✅ [ADMIN LOGGING] Log aktivitas admin (sederhana) DISIMPAN, id:", logResult.insertId);
-          }
-        }
-      );
-    } else {
-      console.warn("⚠️ [ADMIN LOGGING] Nama pengguna admin tidak ditemukan. Tidak bisa menyimpan log.", { admin_object: admin });
-    }
-
-    res.json({
-      message: "Login admin berhasil",
-      admin: { id: admin.id, nama_pengguna: admin.nama_pengguna }, // Respons ke klien tetap sama
-    });
-  });
 });
+
+/* ======================= LOGIN ADMIN (Diperbaiki dengan bcryptjs) ======================= */
+app.post("/api/admin-login", async (req, res) => {
+    const { nama_pengguna, password } = req.body;
+    console.log(`[ADMIN LOGIN ATTEMPT] User: ${nama_pengguna}`);
+
+    if (!nama_pengguna || !password) {
+        console.warn("[ADMIN LOGIN] Data tidak lengkap:", { nama_pengguna, password_exists: !!password });
+        return res.status(400).json({ error: "Nama pengguna dan password admin wajib diisi" });
+    }
+    
+    try {
+        const [results] = await db.promise().query("SELECT * FROM admins WHERE nama_pengguna = ?", [nama_pengguna]);
+        
+        if (results.length === 0) {
+            console.warn(`[ADMIN LOGIN] Admin tidak ditemukan: ${nama_pengguna}`);
+            return res.status(401).json({ error: "Admin tidak ditemukan" });
+        }
+
+        const admin = results[0];
+        
+        // PERBAIKAN PENTING: Gunakan bcrypt.compare untuk membandingkan password dengan aman
+        const isMatch = await bcrypt.compare(password, admin.password);
+
+        if (!isMatch) {
+            console.warn(`[ADMIN LOGIN] Password salah untuk admin: ${admin.nama_pengguna}`);
+            return res.status(401).json({ error: "Password admin salah" });
+        }
+
+        console.log(`[ADMIN LOGIN] Login berhasil untuk admin: ${admin.nama_pengguna}`);
+        
+        // Logika untuk menyimpan log aktivitas
+        try {
+            const usernameAdmin = admin.nama_pengguna;
+            const waktuLogin = new Date();
+            await db.promise().query(
+              "INSERT INTO log_aktivitas_admin (username_admin, waktu_login) VALUES (?, ?)",
+              [usernameAdmin, waktuLogin]
+            );
+            console.log("✅ [ADMIN LOGGING] Log aktivitas admin DISIMPAN");
+        } catch (logErr) {
+            console.error("❌ [ADMIN LOGGING] GAGAL menyimpan log aktivitas admin:", logErr);
+        }
+
+        res.json({
+            message: "Login admin berhasil",
+            admin: { id: admin.id, nama_pengguna: admin.nama_pengguna },
+        });
+
+    } catch (err) {
+        console.error("❌ Gagal mengambil data admin dari DB:", err);
+        return res.status(500).json({ error: "Kesalahan server saat mengambil data admin" });
+    }
+});
+
 
 /* ======================= TAMBAH DATA TAMU ======================= */
 app.post("/api/tamu", (req, res) => {
@@ -205,24 +193,13 @@ app.post("/api/tamu", (req, res) => {
 app.use("/api/tamu", tamuRoutes);
 app.use("/api/users", usersRoutes);
 
-/* ======================= JALANKAN SERVER ======================= */
-app.listen(port, () => {
-  console.log(`✅ Server berjalan di http://localhost:${port}`);
-  console.log(`ℹ️  Mode: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`📊 Status endpoint: http://localhost:${port}/api/status`);
-  console.log(`📋 Schema tamu endpoint: http://localhost:${port}/api/schema/tamu`);
+/* ======================= ERROR HANDLING (Middleware terakhir) ======================= */
+app.use((err, req, res, next) => {
+  console.error("❌ SERVER ERROR:", err.stack || err);
+  res.status(500).json({ error: "Terjadi kesalahan fatal pada server." });
 });
 
-/* ======================= HANDLE SIGINT (优雅关机) ======================= */
-process.on("SIGINT", () => {
-  console.log("🛑 Menghentikan server... Menutup koneksi database...");
-  db.end((err) => {
-    if (err) {
-      console.error("❌ Error saat menutup koneksi database:", err);
-      process.exit(1);
-    } else {
-      console.log("✅ Koneksi database ditutup dengan baik.");
-      process.exit(0);
-    }
-  });
-});
+/* ======================= UNTUK VERCEL ======================= */
+// Baris app.listen() DIHAPUS karena Vercel yang akan menangani server.
+// Sebagai gantinya, kita ekspor aplikasi 'app'
+module.exports = app;
