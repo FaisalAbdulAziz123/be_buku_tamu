@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
-const bcrypt = require("bcrypt"); // Pastikan bcrypt sudah terinstal: npm install bcrypt
+const bcrypt = require('bcryptjs');
+
 
 // Pastikan path ke file-file ini benar dan file tersebut ada
 const tamuRoutes = require("./routes/tamu");
